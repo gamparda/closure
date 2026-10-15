@@ -1,0 +1,13 @@
+import {readFile,writeFile,copyFile} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import {build} from 'esbuild';
+const root=fileURLToPath(new URL('../',import.meta.url));
+const dir=root+'browser/';
+const asset=(await readFile(dir+'observatory.glb')).toString('base64');
+const result=await build({entryPoints:[dir+'game.js'],bundle:true,write:false,format:'iife',target:'es2020',minify:true,legalComments:'inline',define:{__ASSET__:JSON.stringify(asset)}});
+const html=(await readFile(dir+'shell.html','utf8')).replace('/*__STYLE__*/',await readFile(dir+'style.css','utf8')).replace('/*__SCRIPT__*/',()=>result.outputFiles[0].text.replace(/<\/script/gi,'<\\/script'));
+await writeFile(root+'폐합_실행.html',html);await writeFile(dir+'index.html',html);
+const {ZONES,ROUTE,ENDINGS}=await import('../browser/data.js');
+await writeFile(root+'Unity/Assets/Resources/SurveyData.json',JSON.stringify({zones:ZONES.map(z=>({...z,targets:z.targets.map(([id,label])=>({id,label})),choices:z.choices.map(([id,label])=>({id,label}))})),route:ROUTE,endings:Object.entries(ENDINGS).map(([id,e])=>({id,...e}))},null,2));
+await copyFile(root+'node_modules/three/LICENSE',dir+'THREE-LICENSE.txt');
+console.log('Built 폐합_실행.html — '+Math.round(Buffer.byteLength(html)/1024)+' KiB');

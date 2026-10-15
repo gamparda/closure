@@ -1,0 +1,53 @@
+# Local dependencies and editor caches
+node_modules/
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.bak
+*.blend1
+*.blend2
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
+
+# Packaged Windows player; build from the Unity project
+/Windows/
+
+# Temporary visual verification captures
+/Unity/Assets/Screenshots/
+/Unity/Assets/Screenshots.meta
+
+# Unity-generated files
+/Unity/[Ll]ibrary/
+/Unity/[Tt]emp/
+/Unity/[Oo]bj/
+/Unity/[Ll]ogs/
+/Unity/[Uu]ser[Ss]ettings/
+/Unity/[Bb]uild/
+/Unity/[Bb]uilds/
+/Unity/[Mm]emoryCaptures/
+/Unity/[Rr]ecordings/
+/Unity/.utmp/
+/Unity/Assets/StreamingAssets/aa/
+/Unity/Assets/StreamingAssets/aa.meta
+*.csproj
+*.sln
+*.suo
+*.user
+*.pidb
+*.booproj
+*.unityproj
+*.opendb
+*.VC.db
+*.pidb.meta
+*.pdb.meta
+*.mdb.meta
