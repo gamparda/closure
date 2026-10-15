@@ -77,6 +77,6 @@ namespace Closure {
   public string Hint(){int n=S.help[S.zone]++;Spend(10);var z=Current??Data.zones[0];return z.hint[Math.Min(n,2)];}
   public string ReadNote(){if(!S.notes.Contains(S.zone))S.notes.Add(S.zone);return Current.note;}
   public string Traverse(string id){if(S.located.Count<6||!S.notes.Contains(7))return "U 공간 여섯 곳과 마지막 야장을 확인해야 합니다.";if(S.deadline)return "마감 시각입니다.";if(S.battery<=0)return "장비를 충전하세요.";if(S.closed)return "이미 폐합했습니다.";if(S.route.Count>=7)S.route.Clear();S.battery--;S.route.Add(id);Spend(3);if(S.route.Count==7){S.closed=S.route.SequenceEqual(Data.route);return S.closed?"폐합 오차 0.000 m":"폐합 오차가 허용치를 초과합니다. 순서를 다시 검토하세요.";}return id+" 기록";}
-  public string Sign(string type,string name){if(string.IsNullOrWhiteSpace(name))return "서명자 이름을 입력하세요.";if(type=="D"&&(!S.closed||S.located.Count!=6))return "모든 U 공간을 포함한 폐합이 필요합니다.";if(!Data.endings.Any(e=>e.id==type))return "서명 방식을 선택하세요.";S.signature=name.Trim();S.ending=type;return null;}
+  public string Sign(string type,string name){if(string.IsNullOrWhiteSpace(name))return "서명자 이름을 입력하세요.";if(type=="D"&&(!S.closed||S.located.Count!=6))return "모든 U 공간을 포함한 폐합이 필요합니다.";if(!Data.endings.Any(e=>e.id==type))return "서명 방식을 선택하세요.";if(type=="B"){if(Enumerable.Range(1,7).Any(i=>!S.judgments.Any(j=>j.zone==i)))return "판정하지 않은 구역이 있어 전체 서명할 수 없습니다.";if(S.drift>=80)return "불안정한 구간이 미확정으로 남아 전체 서명할 수 없습니다.";}S.signature=name.Trim();S.ending=type;return null;}
  }
 }
