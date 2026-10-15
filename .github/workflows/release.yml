@@ -1,0 +1,150 @@
+name: Release
+
+# main에 Unity·설치 스크립트 변경이 올라오면 자동으로 빌드해 릴리스한다.
+# 수동 실행(Actions 탭)에서는 버전을 직접 지정하거나, 게시 없이 빌드만 점검할 수 있다.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Unity/**'
+      - 'installer/**'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '버전 x.y.z (비우면 마지막 태그의 patch를 1 올림)'
+        required: false
+      publish:
+        description: '릴리스를 게시 (끄면 빌드와 설치 파일 생성까지만)'
+        type: boolean
+        default: true
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 핵심 규칙 테스트
+        run: node --test browser/core.test.js
+
+  version:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_VERSION}" ]; then
+            V="${INPUT_VERSION}"
+          else
+            last=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1 || true)
+            if [ -z "$last" ]; then
+              V="0.1.0"
+            else
+              IFS=. read -r a b c <<< "${last#v}"
+              V="$a.$b.$((c+1))"
+            fi
+          fi
+          if ! [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::버전 형식이 올바르지 않습니다: $V"; exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/v$V" >/dev/null; then
+            echo "::error::v$V 태그가 이미 있습니다."; exit 1
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "릴리스 버전: $V"
+
+  build-unity:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Unity 라이선스 확인
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+        run: |
+          if [ -z "$UNITY_LICENSE" ]; then
+            echo "::error::저장소 시크릿 UNITY_LICENSE가 없습니다. README의 '자동 릴리스 준비'를 참고하세요."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: Unity/Library
+          key: Library-${{ hashFiles('Unity/Packages/packages-lock.json', 'Unity/ProjectSettings/ProjectVersion.txt') }}
+          restore-keys: Library-
+      - uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: Unity
+          unityVersion: auto
+          targetPlatform: StandaloneWindows64
+          buildName: Closure
+          buildMethod: Closure.Editor.ClosureBuild.BuildWindowsCI
+          customParameters: -closureVersion ${{ needs.version.outputs.version }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: closure-windows
+          path: build/StandaloneWindows64
+          if-no-files-found: error
+          retention-days: 7
+
+  installer:
+    needs: [version, build-unity]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: closure-windows
+          path: payload
+      - name: Inno Setup 설치
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+      - name: 설치 파일과 체크섬 생성
+        shell: pwsh
+        run: |
+          if (-not (Test-Path payload/Closure.exe)) { throw 'payload/Closure.exe가 없습니다. 빌드 산출물을 확인하세요.' }
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          & $iscc "/DAppVersion=$env:VERSION" "/DSourceDir=$((Resolve-Path payload).Path)" installer\closure.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC 실패: $LASTEXITCODE" }
+          $name = "Closure-Setup-$env:VERSION.exe"
+          $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Out-File -Encoding ascii "dist/$name.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: closure-installer
+          path: dist
+          retention-days: 7
+      - name: 릴리스 게시
+        if: github.event_name == 'push' || inputs.publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $name = "Closure-Setup-$env:VERSION.exe"
+          gh release create "v$env:VERSION" "dist/$name" "dist/$name.sha256" --title "폐합 CLOSURE v$env:VERSION" --generate-notes --target $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw "릴리스 생성 실패" }

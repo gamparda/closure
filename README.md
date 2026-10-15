@@ -10,6 +10,10 @@
 
 **Windows 실행판:** 아래 Unity 원본 안내에 따라 `CLOSURE → Windows 실행 파일 빌드`를 실행하면 `Unity/Builds/Windows/Closure.exe`가 생성됩니다. 별도로 제공된 `폐합_Windows.zip`을 가지고 있다면 전체 압축을 해제하고 `Closure.exe`를 실행하세요. Unity 에디터 없이 실행되며, `Closure_Data`, `UnityPlayer.dll` 등 같은 폴더의 파일을 함께 보관해야 합니다.
 
+**설치 프로그램:** [Releases](https://github.com/gamparda/closure/releases/latest)에서 `Closure-Setup-x.y.z.exe`를 받아 실행하세요. 관리자 권한 없이 사용자 폴더(`%LOCALAPPDATA%\Programs\Closure`)에 설치되며, 현재 서명되지 않은 설치 파일이라 Windows SmartScreen 경고가 나올 수 있습니다. 저장 기록은 설치 폴더 밖(`%USERPROFILE%\AppData\LocalLow`)에 있어 업데이트하거나 삭제해도 유지됩니다.
+
+**자동 업데이트:** 설치된 게임은 타이틀 화면에서 최신 릴리스를 확인합니다. 새 버전이 있으면 안내가 나오고, 수락하면 설치 파일을 내려받아 SHA-256을 검증한 뒤 조용히 설치하고 게임을 다시 시작합니다. 네트워크가 없거나 검증에 실패하면 아무것도 바꾸지 않고 넘어갑니다.
+
 이 저장소에는 Unity·브라우저 소스, 블렌더 편집 원본과 브라우저 실행 HTML이 들어 있습니다. Windows 빌드 바이너리, Unity 캐시와 임시 검증 캡처는 Git에서 제외합니다.
 
 이 버전은 **전체 흐름을 검증하는 단축 프로토타입**입니다. 3~4시간 분량의 상용 완성작은 아닙니다. 실제 플레이 시간은 탐색과 재측정 횟수에 따라 달라집니다.
@@ -48,6 +52,30 @@
 시계는 주요 구역 전환에서 압축 진행합니다. 야장 열람 중에는 시간이 흐르지 않습니다. 재방문은 야장의 **수집 기록 → 현장 재방문**에서 선택합니다.
 
 브라우저 자동 저장은 브라우저와 파일 위치에 따라 달라집니다. 실행 파일의 위치를 바꾸거나 다른 브라우저를 쓰면 저장 기록이 이어지지 않을 수 있습니다.
+
+## 자동 릴리스
+
+`main`에 `Unity/`, `installer/`, 워크플로 변경이 푸시되면 `.github/workflows/release.yml`이 다음을 자동으로 수행합니다.
+
+1. 핵심 규칙 테스트 (`node --test`)
+2. 마지막 릴리스 태그의 patch를 올린 새 버전 계산 (태그가 없으면 `0.1.0`)
+3. Unity Windows 빌드 (`Closure.Editor.ClosureBuild.BuildWindowsCI`, 버전은 `-closureVersion`으로 주입)
+4. Inno Setup 설치 파일 `Closure-Setup-x.y.z.exe`와 `.sha256` 생성
+5. GitHub Release 게시
+
+Actions 탭의 **Release → Run workflow**에서 버전을 직접 지정하거나, 게시를 끄고 빌드만 점검할 수 있습니다. 주 버전·부 버전을 올리려면 이 방법으로 `1.0.0` 같은 값을 한 번 지정하면 이후 patch가 이어집니다.
+
+### 자동 릴리스 준비 (최초 1회)
+
+GitHub Actions의 Unity 빌드에는 Unity 라이선스가 필요합니다. 저장소 **Settings → Secrets and variables → Actions**에 아래를 등록하세요. 절차는 [GameCI 활성화 문서](https://game.ci/docs/github/activation)를 따릅니다.
+
+| 시크릿 | 내용 |
+|---|---|
+| `UNITY_LICENSE` | 활성화로 얻은 `.ulf` 라이선스 파일 내용 |
+| `UNITY_EMAIL` | Unity 계정 이메일 |
+| `UNITY_PASSWORD` | Unity 계정 비밀번호 |
+
+Unity 버전(`ProjectSettings/ProjectVersion.txt`)에 맞는 GameCI 이미지가 없으면 빌드가 실패합니다. 이 경우 에디터 버전을 GameCI가 지원하는 버전으로 맞추거나, 라이선스가 있는 PC를 self-hosted runner로 등록하세요.
 
 ## Unity 원본
 

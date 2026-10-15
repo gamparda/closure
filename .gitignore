@@ -51,3 +51,6 @@ Thumbs.db
 *.pidb.meta
 *.pdb.meta
 *.mdb.meta
+
+# Installer output
+/dist/
