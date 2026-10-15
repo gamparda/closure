@@ -54,3 +54,7 @@ Thumbs.db
 
 # Installer output
 /dist/
+
+# .NET test build output
+tests/**/bin/
+tests/**/obj/

@@ -31,11 +31,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-dotnet@v4
         with:
-          node-version: 22
+          dotnet-version: 8.0.x
       - name: 핵심 규칙 테스트
-        run: node --test browser/core.test.js
+        run: dotnet test tests/Closure.Core.Tests
 
   version:
     needs: test

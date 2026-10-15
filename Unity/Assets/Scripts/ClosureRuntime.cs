@@ -3,7 +3,6 @@ using System.IO;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.InputSystem;
-using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 namespace Closure {
@@ -15,7 +14,7 @@ namespace Closure {
   Texture2D concrete,floor;Material wallMat,lowerMat,floorMat,metalMat,worldTextMaterial;Font font;AudioSource ambient,beeper;AudioClip beep,foot;
   public string Target="full",Reading="—.——— m",Message="";public string SavePath=>Path.Combine(Application.persistentDataPath,"closure-survey.json");
   [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)] static void Boot(){if(FindAnyObjectByType<ClosureRuntime>()==null)new GameObject("CLOSURE").AddComponent<ClosureRuntime>();}
-  void Awake(){Application.targetFrameRate=60;QualitySettings.vSyncCount=1;
+  void Awake(){Application.targetFrameRate=60;Cursor.lockState=CursorLockMode.Locked;Cursor.visible=false;QualitySettings.vSyncCount=1;
    var database=Resources.Load<SurveyDatabase>("SurveyDatabase");
    Engine=new SurveyEngine(database?database.survey:JsonUtility.FromJson<SurveyData>(Resources.Load<TextAsset>("SurveyData").text));
    font=Font.CreateDynamicFontFromOSFont(new[]{"Malgun Gothic","Apple SD Gothic Neo","Arial"},24);
@@ -61,8 +60,12 @@ namespace Closure {
   }
   void SetupAudio(){ambient=gameObject.AddComponent<AudioSource>();ambient.loop=true;ambient.volume=.13f;var clip=AudioClip.Create("Ventilation 50Hz",44100*4,1,44100,false);var values=new float[44100*4];var random=new System.Random(8);float brown=0;for(int i=0;i<values.Length;i++){brown=(brown+(float)(random.NextDouble()*2-1)*.02f)/1.02f;values[i]=Mathf.Sin(i*2*Mathf.PI*50/44100)*.12f+brown;}clip.SetData(values,0);ambient.clip=clip;beeper=gameObject.AddComponent<AudioSource>();beep=Tone(1180,.16f);foot=Tone(75,.1f);}
   AudioClip Tone(float frequency,float duration){int count=(int)(44100*duration);var c=AudioClip.Create("Survey tone",count,1,44100,false);var v=new float[count];for(int i=0;i<count;i++)v[i]=Mathf.Sin(i*2*Mathf.PI*frequency/44100)*Mathf.Exp(-i/(float)count*7)*.25f;c.SetData(v,0);return c;}
-  public void StartSurvey(bool resume){if(resume&&File.Exists(SavePath)){try{var state=JsonUtility.FromJson<SurveyState>(File.ReadAllText(SavePath));if(state.version!=1||state.zone<0||state.zone>8)throw new Exception("Invalid save");Engine=new SurveyEngine(Engine.Data,state);}catch{Engine=new SurveyEngine(Engine.Data);}}else Engine=new SurveyEngine(Engine.Data);playing=true;ambient.Play();BuildWorld(S.zone);UI.Refresh();UI.Radio("P로 기준점을 잡고 측정하세요. 숫자는 TAB 야장에 남기시고요. 기존 점은 복도 끝에 있습니다.");Changed();}
-  public void Measure(){Measurement m;var error=Engine.Measure(Target,out m);if(error!=null){UI.Toast(error);Changed();return;}Reading=$"{m.value:0.000} {m.unit}";beeper.pitch=1-S.drift*.001f;beeper.PlayOneShot(beep);Aim();UI.Toast($"{m.reference} → {m.value:0.000} {m.unit} / 원본 기록 보존");if(S.zone==1&&m.target=="full"&&m.reference.StartsWith("P"))UI.Radio("41미터요? 도면에는 24.6인데요. 끝벽 K-12에서 반대로 재 보시고, 의심 가는 기록은 야장에 표시해 주세요.");Changed();}
+  public void StartSurvey(bool resume){if(resume&&File.Exists(SavePath)){try{var state=JsonUtility.FromJson<SurveyState>(File.ReadAllText(SavePath));if(state.version!=1||state.zone<0||state.zone>8)throw new Exception("Invalid save");Engine=new SurveyEngine(Engine.Data,state);}catch{Engine=new SurveyEngine(Engine.Data);}}else Engine=new SurveyEngine(Engine.Data);playing=true;ambient.Play();BuildWorld(S.zone);UI.Refresh();UI.Radio("기준점부터 잡으세요.");UI.ShowKeys(25);Changed();}
+  public void Measure(){Measurement m;var error=Engine.Measure(Target,out m);if(error!=null){UI.Toast(error);Changed();return;}Reading=$"{m.value:0.000} {m.unit}";beeper.pitch=1-S.drift*.001f;beeper.PlayOneShot(beep);Aim();if(S.zone==1&&m.target=="full"&&m.reference.StartsWith("P"))UI.Radio("41미터요? 도면엔 24.6인데요. K-12에서 반대로 재 보세요.");Changed();}
+  static readonly Option[] GroundTargets={new Option{id="full",label="지상 A-1"},new Option{id="standard",label="5m 표준척"}};
+  Option[] Targets=>Engine.Current?.targets??GroundTargets;
+  public string TargetLabel=>Targets.FirstOrDefault(t=>t.id==Target)?.label??Target;
+  void CycleTarget(int direction){var list=Targets;int i=Math.Max(0,Array.FindIndex(list,t=>t.id==Target));Target=list[(i+direction+list.Length)%list.Length].id;Aim();Changed();}
   public void Aim(){Vector3 p=new Vector3(0,1.5f,S.reference=="K"?3:-length+.2f);if(Target=="standard")p=new Vector3(-width/2,1.4f,0);else if(Target.StartsWith("s")&&Target!="standard"){int n=int.Parse(Target.Substring(1));p.z=-(S.zone==1?n*3.075f+(n>=6?16.6f:0):n*length/8);};var direction=p-View.transform.position;var rot=Quaternion.LookRotation(direction).eulerAngles;yaw=rot.y;pitch=rot.x>180?rot.x-360:rot.x;}
   string NearbyAction(){
    var p=player.transform.position;var here=new Vector2(p.x,p.z);
@@ -73,28 +76,28 @@ namespace Closure {
    if(S.zone>0&&(S.zone!=1||S.solved[1])){float d=Vector2.Distance(here,new Vector2(width/2+2.4f,gap-.5f));if(d<distance){best="note";distance=d;}}
    return best;
   }
-  public string InteractionHint(){switch(NearbyAction()){case "exit":return S.zone==8?"[ E ] 최종 성과도 열기":"[ E ] 다음 구역으로 이동";case "K":return "[ E ] "+Engine.Current.point+" 기준 채택";case "charge":return "[ E ] 장비 충전 · 25분";case "note":return "[ E ] 1991년 야장 열람";default:return "";}}
+  public string InteractionHint(){switch(NearbyAction()){case "exit":return S.zone==8?"E  성과도":"E  이동";case "K":return "E  "+Engine.Current.point;case "charge":return "E  충전";case "note":return "E  야장";default:return "";}}
   public void Use(){
    switch(NearbyAction()){
     case "K":UI.Toast(Engine.Adopt());Aim();break;
     case "charge":UI.Toast(Engine.Recharge());break;
-    case "note":Engine.ReadNote();UI.OpenNotebook("archive");if(S.zone==7)UI.Radio("예전 도면하고 너무 다르면 맞춰서 내면 됩니다. — 회사 대표");break;
+    case "note":Engine.ReadNote();UI.OpenNotebook("archive");if(S.zone==7)UI.Radio("예전 도면에 맞춰 내면 됩니다. — 대표");break;
     case "exit":Advance();break;
-    default:UI.Toast("기준점, 충전함, 기록실 가까이에서 E로 조사하세요.");break;
+    default:break;
    }Changed();
   }
-  public void Advance(){if(S.zone==8){UI.OpenNotebook("sign");return;}string error=Engine.Advance();if(error!=null){UI.Toast(error);return;}UI.Close();BuildWorld(S.zone);UI.Radio((Engine.Current?.name??"지상")+"입니다. 확인한 값과 추측한 값은 구분해 주세요.");Changed();}
+  public void Advance(){if(S.zone==8){UI.OpenNotebook("sign");return;}string error=Engine.Advance();if(error!=null){UI.Toast(error);return;}UI.Close();BuildWorld(S.zone);UI.Radio(Engine.Current?.name??"지상");Changed();}
   public void Revisit(int zone){string error=Engine.Revisit(zone);if(error!=null){UI.Toast(error);return;}UI.Close();BuildWorld(S.zone);Changed();}
-  public void Changed(){Shader.SetGlobalFloat("_ClosureDrift",S.drift/100);if(S.deadline&&string.IsNullOrEmpty(S.ending)){S.zone=8;S.maxZone=8;BuildWorld(8);UI.OpenNotebook("sign");UI.Toast("05:00 마감. 확보한 기록으로 서명하세요.");}int w=S.drift>=60?480:640,h=S.drift>=60?270:360;if(lowResolution.width!=w){lowResolution.Release();lowResolution.width=w;lowResolution.height=h;lowResolution.Create();}Save();UI.RefreshHud();}
+  public void Changed(){Shader.SetGlobalFloat("_ClosureDrift",S.drift/100);if(S.deadline&&string.IsNullOrEmpty(S.ending)){S.zone=8;S.maxZone=8;BuildWorld(8);UI.OpenNotebook("sign");UI.Toast("마감");}int w=S.drift>=60?480:640,h=S.drift>=60?270:360;if(lowResolution.width!=w){lowResolution.Release();lowResolution.width=w;lowResolution.height=h;lowResolution.Create();}Save();UI.RefreshHud();}
   public void Save(){if(!playing)return;var p=player.transform.position;S.x=p.x;S.z=p.z;S.yaw=yaw;S.pitch=pitch;try{File.WriteAllText(SavePath,JsonUtility.ToJson(S,true));}catch(Exception e){Debug.LogWarning(e.Message);}}
-  public void ReturnTitle(){Save();playing=false;ambient.Stop();Cursor.lockState=CursorLockMode.None;Cursor.visible=true;UI.Title();}
+  public void ReturnTitle(){Save();playing=false;ambient.Stop();Cursor.lockState=CursorLockMode.Locked;Cursor.visible=false;UI.Title();}
   public void ToggleAudio(){ambient.mute=!ambient.mute;beeper.mute=ambient.mute;UI.Toast(ambient.mute?"환경음 꺼짐":"환경음 켜짐");}
-  void Update(){if(!playing||UI==null)return;var kb=Keyboard.current;if(kb==null)return;if(kb.escapeKey.wasPressedThisFrame){if(UI.ModalOpen)UI.Close();else UI.Pause();return;}if(!string.IsNullOrEmpty(S.ending))return;if(kb.tabKey.wasPressedThisFrame){if(UI.ModalOpen)UI.Close();else UI.OpenNotebook("field");return;}if(UI.ModalOpen)return;
-   if(kb.pKey.wasPressedThisFrame){UI.Toast(Engine.Install());Changed();}if(kb.qKey.wasPressedThisFrame){UI.Toast(Engine.Toggle());Aim();Changed();}if(kb.spaceKey.wasPressedThisFrame)Measure();if(kb.eKey.wasPressedThisFrame)Use();if(kb.rKey.wasPressedThisFrame){UI.Radio(Engine.Hint());Changed();}if(kb.fKey.wasPressedThisFrame)torch.enabled=!torch.enabled;
+  void Update(){if(!playing||UI==null)return;var kb=Keyboard.current;if(kb==null)return;if(!string.IsNullOrEmpty(S.ending))return;if(kb.escapeKey.wasPressedThisFrame){if(UI.ModalOpen)UI.Close();else UI.Pause();return;}if(kb.tabKey.wasPressedThisFrame){if(UI.ModalOpen)UI.Close();else UI.OpenNotebook("field");return;}if(UI.ModalOpen||UI.ConsumedThisFrame)return;
+   if(kb.pKey.wasPressedThisFrame){UI.Toast(Engine.Install());Changed();}if(kb.qKey.wasPressedThisFrame){UI.Toast(Engine.Toggle());Aim();Changed();}if(kb.spaceKey.wasPressedThisFrame||(Mouse.current!=null&&Mouse.current.leftButton.wasPressedThisFrame))Measure();if(kb.zKey.wasPressedThisFrame)CycleTarget(-1);if(kb.xKey.wasPressedThisFrame)CycleTarget(1);if(Mouse.current!=null){float wheel=Mouse.current.scroll.ReadValue().y;if(wheel>0)CycleTarget(-1);else if(wheel<0)CycleTarget(1);}if(kb.eKey.wasPressedThisFrame)Use();if(kb.rKey.wasPressedThisFrame){UI.Radio(Engine.Hint());Changed();}if(kb.fKey.wasPressedThisFrame)torch.enabled=!torch.enabled;
    float x=(kb.dKey.isPressed?1:0)-(kb.aKey.isPressed?1:0),z=(kb.wKey.isPressed?1:0)-(kb.sKey.isPressed?1:0);yaw+=((kb.rightArrowKey.isPressed?1:0)-(kb.leftArrowKey.isPressed?1:0))*Time.deltaTime*90;
    if(Cursor.lockState==CursorLockMode.Locked&&Mouse.current!=null){var delta=Mouse.current.delta.ReadValue();yaw+=delta.x*.12f;pitch=Mathf.Clamp(pitch-delta.y*.12f,-65,65);}
    player.transform.rotation=Quaternion.Euler(0,yaw,0);View.transform.localRotation=Quaternion.Euler(pitch,0,0);var direction=player.transform.TransformDirection(new Vector3(x,0,z).normalized);controller.SimpleMove(direction*(kb.leftShiftKey.isPressed?4:2.5f));float distance=direction.magnitude*Time.deltaTime*2.5f;walkBudget+=distance;stepBudget+=distance;if(stepBudget>1.4f){stepBudget=0;beeper.PlayOneShot(foot,.3f);}if(walkBudget>7){walkBudget=0;Engine.Spend(2);Changed();}autosave+=Time.deltaTime;if(autosave>5){autosave=0;Save();}UI.RefreshHud();
-   if(Mouse.current!=null&&Mouse.current.leftButton.wasPressedThisFrame&&!EventSystem.current.IsPointerOverGameObject()){Cursor.lockState=CursorLockMode.Locked;Cursor.visible=false;}
+   if(Cursor.lockState!=CursorLockMode.Locked&&Mouse.current!=null&&Mouse.current.leftButton.wasPressedThisFrame){Cursor.lockState=CursorLockMode.Locked;Cursor.visible=false;}
   }
   void RefreshFont(Font changed){if(changed==font&&worldTextMaterial)worldTextMaterial.mainTexture=font.material.mainTexture;}void OnApplicationPause(bool pause){if(pause)Save();}void OnApplicationQuit(){Save();}void OnDestroy(){Font.textureRebuilt-=RefreshFont;if(lowResolution)lowResolution.Release();}
  }

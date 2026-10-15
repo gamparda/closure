@@ -1,68 +1,328 @@
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using UnityEngine;
-using UnityEngine.EventSystems;
-using UnityEngine.InputSystem.UI;
+using UnityEngine.InputSystem;
 using UnityEngine.UI;
 
 namespace Closure {
- public sealed class ClosureUI:MonoBehaviour {
-  ClosureRuntime game;SurveyEngine E=>game.Engine;SurveyState S=>game.S;Font font;
-  RectTransform root,hud,overlay;Text clock,objective,reading,reference,battery,toast,radio,context;
-  float toastUntil;bool title;string tab="field",signature="",signType="A";
-  readonly Color paper=new Color(.82f,.81f,.72f),ink=new Color(.16f,.21f,.14f),muted=new Color(.54f,.61f,.47f),light=new Color(.78f,.83f,.68f);
-  public bool ModalOpen=>overlay!=null;
-  public bool IsTitle=>title;
+ // 키보드로만 조작하는 메뉴 한 줄. 마우스는 시점 전용이라 버튼은 쓰지 않는다.
+ public sealed class MenuRow {
+  public string Label = "", Value = "";
+  public int Style;               // 0 선택 항목, 1 소제목(작고 흐림), 2 정보 줄
+  public bool Enabled = true;
+  public float Hold;              // 0보다 크면 Space를 그만큼 길게 눌러야 실행
+  public Action Confirm;
+  public bool Selectable => Style == 0;
+ }
+
+ // 화면 구성: 최소 HUD(시계·배터리·장비 LCD) + 키보드 메뉴(타이틀·일시정지·야장·서명) + 잠깐 나타났다 사라지는 한 줄 문구.
+ public sealed class ClosureUI : MonoBehaviour {
+  static readonly Vector2 TL = new Vector2(0, 1), TR = new Vector2(1, 1), BL = Vector2.zero, BR = new Vector2(1, 0), BC = new Vector2(.5f, 0), CC = new Vector2(.5f, .5f);
+  readonly Color paper = new Color(.82f, .81f, .72f), muted = new Color(.54f, .61f, .47f), light = new Color(.78f, .83f, .68f), shade = new Color(.02f, .045f, .03f);
+
+  ClosureRuntime game; Font font;
+  SurveyEngine E => game.Engine; SurveyState S => game.S;
+  RectTransform root, hud, overlay, menuRoot, banner;
+  Text clock, battery, floorTag, reading, meterRef, hint, toast, radio, keys, holdText;
+  float toastUntil, radioUntil, keysUntil;
+  bool title; int consumedFrame = -1, openedFrame = -1;
+
+  // 메뉴 상태
+  string menuTitle; string[] tabNames, notebookIds; int tabIndex, cursor; bool menuLeft, notebook;
+  Func<List<MenuRow>> builder; List<MenuRow> items = new List<MenuRow>();
+  bool holding; float holdTime; string holdBase = "", signType = "A";
+  Action bannerAccept, bannerLater;
+
+  public bool ModalOpen => overlay != null;
+  public bool IsTitle => title;
+  public bool ConsumedThisFrame => consumedFrame == Time.frameCount;
   public event Action TitleShown;
-  public Text UpdateBanner(string message,Action accept,string acceptLabel,Action later){if(hud==null||!title)return null;HideUpdateBanner();var panel=Panel("Update banner",hud,80,730,1060,70,new Color(.2f,.29f,.17f,.95f));var t=Text(message,panel,16,8,640,54,16,paper);t.alignment=TextAnchor.MiddleLeft;Button(acceptLabel,panel,670,14,190,42,accept,true);Button("나중에",panel,870,14,170,42,later,true);return t;}
-  public void HideUpdateBanner(){if(hud==null)return;var banner=hud.Find("Update banner");if(banner!=null)Destroy(banner.gameObject);}
-  public void Init(ClosureRuntime runtime,Texture worldTexture,Font uiFont){
-   game=runtime;font=uiFont;var canvasGO=new GameObject("Crisp UI Canvas",typeof(RectTransform),typeof(Canvas),typeof(CanvasScaler),typeof(GraphicRaycaster));var canvas=canvasGO.GetComponent<Canvas>();canvas.renderMode=RenderMode.ScreenSpaceOverlay;canvas.sortingOrder=10;var scaler=canvasGO.GetComponent<CanvasScaler>();scaler.uiScaleMode=CanvasScaler.ScaleMode.ScaleWithScreenSize;scaler.referenceResolution=new Vector2(1600,900);scaler.screenMatchMode=CanvasScaler.ScreenMatchMode.Expand;scaler.matchWidthOrHeight=.5f;root=(RectTransform)canvasGO.transform;
-   var bg=Rect("Low-resolution world",root,0,0,1600,900);bg.anchorMin=Vector2.zero;bg.anchorMax=Vector2.one;bg.offsetMin=bg.offsetMax=Vector2.zero;var raw=bg.gameObject.AddComponent<RawImage>();raw.texture=worldTexture;raw.raycastTarget=false;var retro=Shader.Find("Closure/Retro Display");if(retro)raw.material=new Material(retro);
-   if(FindAnyObjectByType<EventSystem>()==null){var eventGO=new GameObject("EventSystem",typeof(EventSystem));eventGO.AddComponent<InputSystemUIInputModule>().AssignDefaultActions();}
+
+  // ───────── 초기화와 공통 도구 ─────────
+  public void Init(ClosureRuntime runtime, Texture worldTexture, Font uiFont) {
+   game = runtime; font = uiFont;
+   var go = new GameObject("Crisp UI Canvas", typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler));
+   var canvas = go.GetComponent<Canvas>(); canvas.renderMode = RenderMode.ScreenSpaceOverlay; canvas.sortingOrder = 10;
+   var scaler = go.GetComponent<CanvasScaler>(); scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize; scaler.referenceResolution = new Vector2(1600, 900); scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.Expand;
+   root = (RectTransform)go.transform;
+   var bg = Rect("Low-resolution world", root, CC, CC, Vector2.zero, Vector2.zero); Stretch(bg);
+   var raw = bg.gameObject.AddComponent<RawImage>(); raw.texture = worldTexture; raw.raycastTarget = false;
+   var retro = Shader.Find("Closure/Retro Display"); if (retro) raw.material = new Material(retro);
   }
-  RectTransform Rect(string name,Transform parent,float x,float y,float w,float h){var go=new GameObject(name,typeof(RectTransform));go.transform.SetParent(parent,false);var rt=(RectTransform)go.transform;rt.anchorMin=rt.anchorMax=new Vector2(0,1);rt.pivot=new Vector2(0,1);rt.anchoredPosition=new Vector2(x,-y);rt.sizeDelta=new Vector2(w,h);if(parent==root&&name!="Low-resolution world"){rt.anchorMin=rt.anchorMax=new Vector2(.5f,.5f);rt.pivot=new Vector2(.5f,.5f);rt.anchoredPosition=Vector2.zero;}return rt;}
-  RectTransform Panel(string name,Transform parent,float x,float y,float w,float h,Color color){var rt=Rect(name,parent,x,y,w,h);var image=rt.gameObject.AddComponent<Image>();image.color=color;return rt;}
-  Text Text(string content,Transform parent,float x,float y,float w,float h,int size=18,Color? color=null){var rt=Rect(content,parent,x,y,w,h);var t=rt.gameObject.AddComponent<Text>();t.font=font;t.text=content;t.fontSize=size;t.color=color??light;t.supportRichText=false;t.horizontalOverflow=HorizontalWrapMode.Wrap;t.verticalOverflow=VerticalWrapMode.Overflow;t.raycastTarget=false;return t;}
-  Button Button(string label,Transform parent,float x,float y,float w,float h,Action action,bool dark=false){var rt=Panel(label,parent,x,y,w,h,dark?new Color(.2f,.29f,.17f):new Color(.62f,.69f,.49f,.15f));var b=rt.gameObject.AddComponent<Button>();var c=b.colors;c.highlightedColor=new Color(.74f,.81f,.59f,.8f);c.pressedColor=new Color(.5f,.6f,.4f);b.colors=c;var t=Text(label,rt,12,0,w-24,h,16,dark?paper:title?light:ink);t.alignment=TextAnchor.MiddleLeft;b.onClick.AddListener(()=>action());return b;}
-  void Delete(ref RectTransform rect){if(rect!=null)Destroy(rect.gameObject);rect=null;}
-  public void Title(){Close();title=true;Delete(ref hud);hud=Panel("Title",root,0,0,1600,900,new Color(.025f,.055f,.035f,.65f));Text("⌖  서진산 지질관측소",hud,80,55,800,35,20);Text("SEOJINSAN GEOLOGICAL OBSERVATORY / 1991년 폐쇄",hud,80,95,900,25,12,muted);Text("철거 전날, 마지막 측량",hud,130,255,500,30,16,muted);Text("폐 합",hud,120,290,700,160,112,paper);Text("C L O S U R E",hud,130,450,600,30,18,muted);Text("당신이 서명한 도면이\n현실이 된다.",hud,130,520,600,90,27,paper);Button("새 현장 시작  ↗",hud,130,650,240,60,()=>game.StartSurvey(false),true);Button("기록 이어가기  ↗",hud,390,650,230,60,()=>game.StartSurvey(true),true).interactable=File.Exists(game.SavePath);Text("측량 성과도 제출 마감\n05:00\n익일 06:00 발파 예정",hud,1250,370,300,150,24,muted);Text("WASD 이동 · 마우스 시점 · 헤드폰 권장",hud,80,830,1100,30,14,muted);TitleShown?.Invoke();}
-  public void Refresh(){title=false;Delete(ref hud);hud=Rect("HUD",root,0,0,1600,900);Panel("Top status shade",hud,0,0,1600,80,new Color(.02f,.04f,.025f,.75f));Panel("Objective shade",hud,22,105,440,185,new Color(.02f,.04f,.025f,.7f));Panel("Plan shade",hud,1290,125,290,205,new Color(.02f,.04f,.025f,.6f));Text((E.Current?.floor??"지상")+" / "+(E.Current?.name??"관측소 진입로"),hud,35,25,800,40,20);clock=Text("",hud,1240,25,280,40,27);Button("Ⅱ",hud,1535,20,45,45,Pause,true);
-   objective=Text("",hud,35,120,420,100,20);reference=Text("",hud,35,235,420,40,14,muted);Text("기존 도면 / 1991\n┌───────────┐\n│   ─ ─ ─ ─  ├──┐\n└───────────┘  ┘\nL = "+(E.Current?.plan??12.4f).ToString("0.000")+" m",hud,1310,140,280,190,14,muted);
-   var instrument=Panel("Laser distance meter",hud,1230,570,335,240,new Color(.17f,.21f,.13f,.97f));Text("LASER DISTANCE METER",instrument,18,14,280,22,12,muted);battery=Text("",instrument,18,36,290,24,14);var lcd=Panel("LCD",instrument,16,65,303,84,new Color(.63f,.7f,.47f));reading=Text(game.Reading,lcd,12,18,280,60,38,ink);Button("대상 선택",instrument,18,162,145,40,ChooseTarget,true);Button("측정 [SPACE]",instrument,175,162,145,40,()=>game.Measure(),true);Text("P 설치 / 회수 · Q 기준 전환",instrument,18,211,310,25,12,muted);
-   Button("TAB  야장 / 판정",hud,35,830,225,43,()=>OpenNotebook("field"),true);Button("R  감독관 무전",hud,275,830,210,43,()=>{Radio(E.Hint());game.Changed();},true);Button("시점 잠금",hud,505,830,170,43,()=>{Cursor.lockState=CursorLockMode.Locked;Cursor.visible=false;},true);Text("WASD 이동 / E 조사 / F 손전등 / ESC 일시 정지",hud,740,842,900,30,13,muted);
-   toast=Text("",hud,480,760,700,50,17,paper);toast.alignment=TextAnchor.MiddleCenter;radio=Text("",hud,35,620,650,110,17,paper);context=Text("",hud,470,470,760,50,13,muted);Text("＋",hud,790,440,35,35,18,paper);RefreshHud();if(!string.IsNullOrEmpty(S.ending))ShowEnding();
+  RectTransform Rect(string name, Transform parent, Vector2 anchor, Vector2 pivot, Vector2 pos, Vector2 size) {
+   var go = new GameObject(name, typeof(RectTransform)); go.transform.SetParent(parent, false);
+   var rt = (RectTransform)go.transform; rt.anchorMin = rt.anchorMax = anchor; rt.pivot = pivot; rt.anchoredPosition = pos; rt.sizeDelta = size; return rt;
   }
-  public void RefreshHud(){if(title||clock==null)return;context.text=game.InteractionHint();clock.text=SurveyEngine.Clock(S.minutes)+" / 제출 05:00";reading.text=game.Reading;battery.text=new string('▮',S.battery)+new string('▯',7-S.battery);reference.text=S.reference=="K"?E.Current.point+" / 1991":S.installed?"신규 P-"+S.zone+" / 2026":"P 키로 기준점을 설치하십시오.";objective.text=S.zone==0?(S.records.Any(r=>r.zone==0)?"지상 작업 완료. TAB에서 지하 진입":"기준점 설치 → 지상 A-1 측정"):S.zone==8?"최종 폐합 / 성과도 서명":E.Current.question;}
-  public void Toast(string message){if(toast==null)return;toast.text=message;toastUntil=Time.unscaledTime+5;}
-  public void Radio(string message){if(radio!=null)radio.text="CH.02 / 감독관\n"+message;}
-  void Update(){if(toast!=null&&Time.unscaledTime>toastUntil)toast.text="";}
-  public void Close(){Delete(ref overlay);Cursor.lockState=CursorLockMode.None;Cursor.visible=true;}
-  RectTransform Modal(string name){Close();overlay=Panel("Overlay",root,0,0,1600,900,new Color(.02f,.045f,.03f,.9f));var card=Panel("Paper",overlay,130,65,1340,770,paper);Text(name,card,35,20,1130,60,30,ink);Button("×",card,1270,15,45,45,Close);var scrollGO=Rect("Scroll",card,35,125,1270,610);var scroll=scrollGO.gameObject.AddComponent<ScrollRect>();scroll.horizontal=false;var viewport=Panel("Viewport",scrollGO,0,0,1270,610,new Color(1,1,1,.01f));viewport.gameObject.AddComponent<RectMask2D>();var content=Rect("Content",viewport,0,0,1250,600);var layout=content.gameObject.AddComponent<VerticalLayoutGroup>();layout.spacing=12;layout.childControlHeight=true;layout.childControlWidth=true;layout.childForceExpandHeight=false;var fitter=content.gameObject.AddComponent<ContentSizeFitter>();fitter.verticalFit=ContentSizeFitter.FitMode.PreferredSize;scroll.viewport=viewport;scroll.content=content;return content;}
-  void Line(Transform parent,string value,int size=17,float height=40,Color? color=null){var t=Text(value,parent,0,0,1230,height,size,color??ink);t.gameObject.AddComponent<LayoutElement>().preferredHeight=height;}
-  Button Action(Transform parent,string value,Action action,bool primary=false){var b=Button(value,parent,0,0,1220,44,action,primary);b.gameObject.AddComponent<LayoutElement>().preferredHeight=44;return b;}
-  public void OpenNotebook(string nextTab="field"){
-   tab=S.zone==8&&nextTab=="field"?"sign":nextTab;var content=Modal(tab=="sign"?"측량 성과도":"현장 야장");var card=overlay.GetChild(0);int at=35;foreach(string id in S.zone==8?new[]{"field","archive","senior","closure","sign"}:new[]{"field","archive","senior"}){string local=id;string label=id=="field"?"현장 야장":id=="archive"?"수집 기록":id=="senior"?"선배 수첩":id=="closure"?"최종 폐합":"성과도 서명";Button(label,card,at,80,180,35,()=>OpenNotebook(local),tab==local);at+=190;}
-   Line(content,"2026.10.15 / "+SurveyEngine.Clock(S.minutes)+" / 원본 "+S.records.Count+"건 / 열람 시간 소모 없음",13,30,muted);
-   if(tab=="archive"){Archive(content);return;}if(tab=="senior"){Line(content,"숫자가 이상하면 표준척부터 재 봐. 5m짜리.",19,55);Line(content,"기존 점이랑 내 점이랑 다르게 보면, 보는 기준이 다른 거야.",19,55);Line(content,"어디서 틀어지는지 모르겠으면 반으로 쪼개.",19,55);if(S.zone>=3)Line(content,"한 바퀴 돌아 제자리로 왔는데 안 맞으면 그게 오차야.",19,55);if(S.zone>=6)Line(content,"서명은 내가 한다. 숫자가 아니라 내가 확인한 걸 믿는 거야.",19,55);return;}
-   if(tab=="closure"){Closure(content);return;}if(tab=="sign"){Sign(content);return;}
-   Line(content,(E.Current?.name??"지상 A-1")+" / 도면 "+(E.Current?.plan??12.4f).ToString("0.000")+"m",22,45);
-   foreach(var record in S.records.Where(r=>r.zone==S.zone)){var r=record;string label=E.Current?.targets.FirstOrDefault(t=>t.id==r.target)?.label??r.target;Action(content,$"{r.id:00} | {label} | {r.reference} | {r.value:0.000} {r.unit} | {(r.suspect?"☒ 의심":"□ 의심")}",()=>{r.suspect=!r.suspect;game.Save();OpenNotebook(tab);});}
-   if(S.zone>0){Line(content,E.Current.question,22,50);foreach(var choice in E.Current.choices){var c=choice;Action(content,"위치 판정: "+c.label,()=>{Toast(E.Locate(c.id));game.Changed();OpenNotebook(tab);});}Line(content,S.solved[S.zone]?(E.Current.u??"1991")+" 위치 / 기록 확인":"비교 측정으로 근거를 확보한 뒤 위치를 표시하십시오.",15,35,muted);foreach(var type in new[]{"K","P","hold"}){string t=type;Action(content,t=="K"?$"K {E.Current.k:0.000}m로 확정":t=="P"?$"P {E.Current.p:0.000}m / 폐합 보류":"측량 불가 / 판정 보류",()=>{Toast(E.Judge(t));game.Changed();OpenNotebook(tab);});}var j=S.judgments.FirstOrDefault(i=>i.zone==S.zone);Line(content,"폐합 오차: "+(j==null?"—.———":j.error.ToString("0.000"))+" m / 허용 0.050m",18,45);}
-   Action(content,S.zone==0?"지상 작업 완료 · 지하 진입 →":"다음 구역으로 이동 →",game.Advance,true);
+  static void Stretch(RectTransform rt) { rt.anchorMin = Vector2.zero; rt.anchorMax = Vector2.one; rt.offsetMin = rt.offsetMax = Vector2.zero; }
+  Image Panel(string name, Transform parent, Vector2 anchor, Vector2 pivot, Vector2 pos, Vector2 size, Color color) {
+   var image = Rect(name, parent, anchor, pivot, pos, size).gameObject.AddComponent<Image>(); image.color = color; image.raycastTarget = false; return image;
   }
-  void Archive(Transform content){foreach(int id in S.notes){var z=E.Data.zones[id-1];Line(content,$"Z{id} / {z.name}",21,40);Line(content,z.note,18,130);}if(S.notes.Count==0)Line(content,"보조 기록실의 책상 위 야장을 E로 조사하세요.",18,60);Line(content,"미확인 공간 색인",22,45);foreach(var z in E.Data.zones.Take(6))Line(content,z.u+" / "+(S.located.Any(l=>l.id==z.u)?z.name:"위치 미확인"),17,35);Line(content,"현장 재방문 / 이동 12분",18,40);for(int id=1;id<=S.maxZone;id++){int n=id;Action(content,$"Z{id} / {E.Data.zones[id-1].name} 재방문",()=>game.Revisit(n));}}
-  void Closure(Transform content){Line(content,"여섯 미확인 공간을 하나의 고리 안에 넣어 K-01로 돌아오십시오.",21,70);Line(content,"귀환 순서는 지하 2층 순환로에서 수집한 야장에 있습니다.",16,45);foreach(string id in new[]{"U-1","U-2","U-3","U-4","U-5","U-6","K-01"}){string node=id;Action(content,node+" 측정",()=>{Toast(E.Traverse(node));game.Changed();OpenNotebook("closure");});}Line(content,string.Join(" → ",S.route),20,70);Line(content,S.closed?"폐합 오차 0.000 m / 허용 0.050 m":"폐합 미완료 / 배터리 "+S.battery+"/7",20,45);Action(content,"측정 순서 초기화",()=>{S.route.Clear();S.closed=false;game.Save();OpenNotebook("closure");});}
-  void Sign(Transform content){foreach(var z in E.Data.zones.Take(7)){var j=S.judgments.FirstOrDefault(v=>v.zone==z.id);Line(content,$"Z{z.id} {z.name} | {(j==null?"미확정":j.value.ToString("0.000")+" m / "+j.status)} | 도움 {S.help[z.id]}회",16,40);}Line(content,"최종 폐합: "+(S.closed?"0.000 m":"미완료")+" / 미확인 공간 "+S.located.Count+"/6",20,50);
-   foreach(string id in new[]{"A","B","C","D"}){string type=id;var ending=E.Data.endings.First(e=>e.id==type);var button=Action(content,(type==signType?"● ":"○ ")+type+" / "+ending.name,()=>{signType=type;OpenNotebook("sign");});button.interactable=type!="D"||S.closed;}
-   var inputRect=Panel("Signature input",content,0,0,1200,48,new Color(.9f,.89f,.78f));inputRect.gameObject.AddComponent<LayoutElement>().preferredHeight=48;var input=inputRect.gameObject.AddComponent<InputField>();var text=Text(signature,inputRect,12,8,1170,40,20,ink);input.textComponent=text;input.characterLimit=32;input.text=signature;var placeholder=Text("서명할 이름",inputRect,12,8,1170,40,20,muted);input.placeholder=placeholder;input.onValueChanged.AddListener(value=>signature=value);
-   Action(content,"성과도에 서명 / 제출 →",()=>{string error=E.Sign(signType,signature);if(error!=null)Toast(error);else{game.Save();ShowEnding();}},true);
+  Text Label(Transform parent, string content, int size, Color color, TextAnchor align, Vector2 anchor, Vector2 pivot, Vector2 pos, Vector2 box) {
+   var t = Rect("Text", parent, anchor, pivot, pos, box).gameObject.AddComponent<Text>();
+   t.font = font; t.text = content; t.fontSize = size; t.color = color; t.alignment = align; t.supportRichText = true;
+   t.horizontalOverflow = HorizontalWrapMode.Wrap; t.verticalOverflow = VerticalWrapMode.Overflow; t.raycastTarget = false; return t;
   }
-  void ChooseTarget(){var content=Modal("장비 / 측정 대상");var targets=E.Current?.targets??new[]{new Option{id="full",label="지상 A-1"},new Option{id="standard",label="5m 표준척"}};foreach(var target in targets){var t=target;Action(content,t.label,()=>{game.Target=t.id;game.Aim();Close();Toast(t.label+" 자동 조준");});}}
-  public void Pause(){var c=Modal("작업 중지");Line(c,"야장을 검토하는 동안 시간은 흐르지 않습니다. 기록은 자동 저장됩니다.",18,70);Action(c,"현장으로 복귀",Close,true);Action(c,"현장 기록 파일 보관",Export);Action(c,"환경음 켜기 / 끄기",game.ToggleAudio);Action(c,"철수",()=>{E.Sign("E","미서명");game.Save();ShowEnding();}).interactable=S.notes.Contains(1);Action(c,"타이틀로 돌아가기",game.ReturnTitle);}
-  public void ShowEnding(){var e=E.Data.endings.First(v=>v.id==S.ending);var c=Modal("ENDING "+e.id+" / "+e.name);Line(c,e.headline,28,90);Line(c,e.text,21,170);Line(c,e.after,17,60);Line(c,"측량자 "+S.signature+" / 원본 "+S.records.Count+"건 / U 공간 "+S.located.Count+"/6",17,50);Action(c,"성과도 보관",Export,true);Action(c,"타이틀로 돌아가기",game.ReturnTitle);}
-  void Export(){var b=new StringBuilder("폐합 / 서진산 지질관측소 측량 성과도\n서명: "+S.signature+"\n\n");foreach(var r in S.records)b.AppendLine($"{SurveyEngine.Clock(r.time)} / Z{r.zone} / {r.reference} / {r.target} / {r.value:0.000} {r.unit} / {(r.suspect?"의심":"")}");b.AppendLine("귀환: "+string.Join(" → ",S.route));var path=Path.Combine(Application.persistentDataPath,"폐합_현장성과도.txt");File.WriteAllText(path,b.ToString(),Encoding.UTF8);Toast("성과도 저장: "+path);Application.OpenURL("file:///"+Application.persistentDataPath.Replace('\\','/'));}
+  static void Delete(ref RectTransform rect) { if (rect != null) Destroy(rect.gameObject); rect = null; }
+
+  // ───────── 타이틀 ─────────
+  public void Title() {
+   Close(); title = true; Delete(ref hud); HideUpdateBanner();
+   hud = Rect("Title", root, CC, CC, Vector2.zero, Vector2.zero); Stretch(hud);
+   var dim = Panel("Shade", hud, CC, CC, Vector2.zero, Vector2.zero, new Color(shade.r, shade.g, shade.b, .6f)); Stretch(dim.rectTransform);
+   Label(hud, "서진산 지질관측소", 20, light, TextAnchor.UpperLeft, TL, TL, new Vector2(80, -55), new Vector2(700, 36));
+   Label(hud, "폐 합", 112, paper, TextAnchor.UpperLeft, TL, TL, new Vector2(120, -255), new Vector2(700, 160));
+   Label(hud, "C L O S U R E", 18, muted, TextAnchor.UpperLeft, TL, TL, new Vector2(130, -420), new Vector2(600, 30));
+   Label(hud, "당신이 서명한 도면이\n현실이 된다.", 27, paper, TextAnchor.UpperLeft, TL, TL, new Vector2(130, -480), new Vector2(600, 90));
+   Label(hud, "05:00 제출  ·  06:00 발파", 22, muted, TextAnchor.UpperRight, TR, TR, new Vector2(-80, -55), new Vector2(500, 36));
+   Label(hud, "↑ ↓   Space", 14, muted, TextAnchor.LowerLeft, BL, BL, new Vector2(80, 36), new Vector2(400, 24));
+   OpenMenu("", null, 0, TitleItems, true);
+   TitleShown?.Invoke();
+  }
+  List<MenuRow> TitleItems() {
+   return new List<MenuRow> {
+    Item("새 현장", "", () => game.StartSurvey(false)),
+    Item("이어서", "", () => game.StartSurvey(true), File.Exists(game.SavePath)),
+    Item("종료", "", Application.Quit)
+   };
+  }
+
+  // ───────── 게임 HUD ─────────
+  public void Refresh() {
+   Close(); title = false; Delete(ref hud); HideUpdateBanner();
+   hud = Rect("HUD", root, CC, CC, Vector2.zero, Vector2.zero); Stretch(hud);
+   clock = Label(hud, "", 32, paper, TextAnchor.UpperLeft, TL, TL, new Vector2(36, -28), new Vector2(420, 44));
+   battery = Label(hud, "", 18, muted, TextAnchor.UpperLeft, TL, TL, new Vector2(38, -74), new Vector2(420, 28));
+   floorTag = Label(hud, "", 14, muted, TextAnchor.UpperLeft, TL, TL, new Vector2(38, -102), new Vector2(420, 24));
+   var meter = Panel("Meter", hud, BR, BR, new Vector2(-36, 36), new Vector2(320, 112), new Color(.07f, .1f, .06f, .82f)).rectTransform;
+   meterRef = Label(meter, "", 14, muted, TextAnchor.UpperLeft, TL, TL, new Vector2(14, -8), new Vector2(292, 24));
+   reading = Label(meter, "", 44, light, TextAnchor.MiddleRight, TL, TL, new Vector2(14, -34), new Vector2(292, 68));
+   Panel("Reticle", hud, CC, CC, Vector2.zero, new Vector2(4, 4), new Color(paper.r, paper.g, paper.b, .8f));
+   hint = Label(hud, "", 17, muted, TextAnchor.UpperCenter, CC, CC, new Vector2(0, -44), new Vector2(500, 30));
+   toast = Label(hud, "", 20, paper, TextAnchor.MiddleCenter, BC, BC, new Vector2(0, 150), new Vector2(900, 36));
+   radio = Label(hud, "", 21, light, TextAnchor.MiddleCenter, BC, BC, new Vector2(0, 96), new Vector2(1000, 44));
+   keys = Label(hud, "", 13, muted, TextAnchor.LowerLeft, BL, BL, new Vector2(36, 28), new Vector2(900, 24));
+   RefreshHud(); if (!string.IsNullOrEmpty(S.ending)) ShowEnding();
+  }
+  public void RefreshHud() {
+   if (title || clock == null) return;
+   clock.text = SurveyEngine.Clock(S.minutes) + " <size=16><color=#8a9c78>/ 05:00</color></size>";
+   battery.text = new string('▮', S.battery) + new string('▯', 7 - S.battery);
+   floorTag.text = E.Current?.floor ?? "지상";
+   reading.text = game.Reading;
+   string reference = S.reference == "K" ? E.Current.point : S.installed ? "P-" + S.zone : "—";
+   meterRef.text = reference + "  ·  " + game.TargetLabel;
+   hint.text = game.InteractionHint();
+  }
+  public void Toast(string message) { if (toast == null) return; toast.text = message; toastUntil = Time.unscaledTime + 2.5f; }
+  public void Radio(string message) { if (radio == null) return; radio.text = message; radioUntil = Time.unscaledTime + 4.5f; }
+  public void ShowKeys(float seconds) { if (keys == null) return; keys.text = "WASD 이동  ·  휠 대상  ·  클릭 측정  ·  P 기준점  ·  E 조사  ·  TAB 야장"; keysUntil = Time.unscaledTime + seconds; }
+
+  // ───────── 업데이트 안내 (타이틀 전용, 키보드: U / N) ─────────
+  public Text UpdateBanner(string message, Action accept, string acceptLabel, Action later) {
+   if (hud == null || !title) return null;
+   HideUpdateBanner(); bannerAccept = accept; bannerLater = later;
+   banner = Panel("Update banner", hud, BL, BL, new Vector2(130, 70), new Vector2(980, 44), new Color(.2f, .29f, .17f, .95f)).rectTransform;
+   return Label(banner, message + "   [U] " + acceptLabel + "   [N] 나중에", 16, paper, TextAnchor.MiddleLeft, CC, CC, Vector2.zero, new Vector2(950, 44));
+  }
+  public void HideUpdateBanner() { Delete(ref banner); bannerAccept = bannerLater = null; }
+
+  // ───────── 입력과 연출 ─────────
+  void Update() {
+   float now = Time.unscaledTime;
+   Fade(toast, toastUntil, now); Fade(radio, radioUntil, now); Fade(keys, keysUntil, now);
+   var kb = Keyboard.current; if (kb == null) return;
+   if (banner != null && title) {
+    if (kb.uKey.wasPressedThisFrame) bannerAccept?.Invoke();
+    else if (kb.nKey.wasPressedThisFrame) bannerLater?.Invoke();
+   }
+   if (overlay == null) return;
+   consumedFrame = Time.frameCount;            // 메뉴가 열려 있는 프레임의 입력은 게임이 다시 쓰지 않는다
+   if (openedFrame == Time.frameCount) return; // 메뉴를 연 키가 같은 프레임에 메뉴 조작으로 번지지 않게
+   if (holding) { UpdateHold(kb); return; }
+   if (kb.upArrowKey.wasPressedThisFrame || kb.wKey.wasPressedThisFrame) Move(-1);
+   else if (kb.downArrowKey.wasPressedThisFrame || kb.sKey.wasPressedThisFrame) Move(1);
+   else if (notebook && (kb.leftArrowKey.wasPressedThisFrame || kb.qKey.wasPressedThisFrame)) ChangeTab(-1);
+   else if (notebook && (kb.rightArrowKey.wasPressedThisFrame || kb.eKey.wasPressedThisFrame)) ChangeTab(1);
+   else if (kb.spaceKey.wasPressedThisFrame || kb.enterKey.wasPressedThisFrame) Confirm();
+  }
+  static void Fade(Text t, float until, float now) { if (t == null) return; var c = t.color; c.a = Mathf.Clamp01((until - now) / .5f); t.color = c; }
+
+  // ───────── 메뉴 엔진 ─────────
+  MenuRow Item(string label, string value, Action action, bool enabled = true) { return new MenuRow { Label = label, Value = value, Confirm = action, Enabled = enabled }; }
+  MenuRow Head(string text) { return new MenuRow { Label = text, Style = 1 }; }
+  MenuRow Line(string text, string value = "") { return new MenuRow { Label = text, Value = value, Style = 2 }; }
+
+  void OpenMenu(string heading, string[] names, int tab, Func<List<MenuRow>> build, bool left, bool dim = true, bool isNotebook = false) {
+   Close();
+   menuTitle = heading; tabNames = names; tabIndex = tab; builder = build; menuLeft = left; notebook = isNotebook; cursor = 0; holding = false; holdTime = 0;
+   overlay = Rect("Overlay", root, CC, CC, Vector2.zero, Vector2.zero); Stretch(overlay);
+   if (dim && !left) { var d = Panel("Dim", overlay, CC, CC, Vector2.zero, Vector2.zero, new Color(shade.r, shade.g, shade.b, .88f)); Stretch(d.rectTransform); }
+   openedFrame = Time.frameCount; Rebuild(true);
+  }
+  void Rebuild(bool reset = false) {
+   items = builder(); if (reset || cursor >= items.Count) cursor = 0;
+   if (items.Count > 0 && !items[cursor].Selectable) { int first = items.FindIndex(i => i.Selectable); cursor = first < 0 ? 0 : first; }
+   Draw();
+  }
+  void Draw() {
+   Delete(ref menuRoot); holdText = null;
+   float w = menuLeft ? 560 : 900;
+   menuRoot = Rect("Menu", overlay, menuLeft ? BL : CC, menuLeft ? BL : CC, menuLeft ? new Vector2(130, 100) : Vector2.zero, new Vector2(w, menuLeft ? 300 : 720));
+   float y = 0; // 항목은 메뉴 영역의 위쪽(TL)에서 아래로 쌓는다
+   if (!string.IsNullOrEmpty(menuTitle)) { Label(menuRoot, menuTitle, 28, paper, TextAnchor.UpperLeft, TL, TL, new Vector2(0, y), new Vector2(w, 40)); y -= 54; }
+   if (tabNames != null) {
+    var sb = new StringBuilder("◂   ");
+    for (int i = 0; i < tabNames.Length; i++) sb.Append(i == tabIndex ? "<color=#d1cfb8>" + tabNames[i] + "</color>" : "<color=#6f7d62>" + tabNames[i] + "</color>").Append(i < tabNames.Length - 1 ? "    " : "");
+    sb.Append("   ▸"); Label(menuRoot, sb.ToString(), 17, muted, TextAnchor.UpperLeft, TL, TL, new Vector2(0, y), new Vector2(w, 28)); y -= 46;
+   }
+   int visible = menuLeft ? 5 : 12, start = Mathf.Clamp(cursor - visible / 2, 0, Mathf.Max(0, items.Count - visible));
+   for (int i = start; i < Mathf.Min(items.Count, start + visible); i++) {
+    var it = items[i]; bool selected = i == cursor; float height = it.Style == 1 ? 30 : it.Style == 2 ? 32 : 40;
+    Color color = it.Style == 1 ? muted : it.Style == 2 ? light : !it.Enabled ? new Color(muted.r, muted.g, muted.b, .55f) : selected ? paper : light;
+    int size = it.Style == 1 ? 15 : it.Style == 2 ? 18 : 21;
+    string prefix = it.Style == 0 ? (selected ? "▸  " : "    ") : "";
+    Label(menuRoot, prefix + it.Label, size, color, TextAnchor.UpperLeft, TL, TL, new Vector2(0, y), new Vector2(w, height));
+    var value = Label(menuRoot, it.Value, size - 2, selected ? paper : muted, TextAnchor.UpperRight, TL, TL, new Vector2(0, y), new Vector2(w, height));
+    if (selected && it.Hold > 0) { holdText = value; holdBase = it.Value; }
+    y -= height;
+   }
+   if (start + visible < items.Count) Label(menuRoot, "▼", 14, muted, TextAnchor.UpperRight, TL, TL, new Vector2(0, y), new Vector2(w, 24));
+  }
+  void Move(int direction) {
+   int n = items.Count; if (n == 0) return; int next = cursor;
+   for (int i = 0; i < n; i++) { next = (next + direction + n) % n; if (items[next].Selectable) { cursor = next; break; } }
+   Draw();
+  }
+  void Confirm() {
+   if (cursor < 0 || cursor >= items.Count) return; var item = items[cursor];
+   if (!item.Selectable || !item.Enabled || item.Confirm == null) return;
+   if (item.Hold > 0) { holding = true; holdTime = 0; return; }
+   Run(item);
+  }
+  void Run(MenuRow item) { var before = builder; item.Confirm(); if (overlay != null && builder == before) Rebuild(); }
+  void UpdateHold(Keyboard kb) {
+   var item = items[cursor];
+   if (!(kb.spaceKey.isPressed || kb.enterKey.isPressed)) { holding = false; holdTime = 0; if (holdText != null) holdText.text = holdBase; return; }
+   holdTime += Time.unscaledDeltaTime; float progress = Mathf.Clamp01(holdTime / item.Hold);
+   if (holdText != null) holdText.text = new string('▮', Mathf.FloorToInt(progress * 10)) + new string('▯', 10 - Mathf.FloorToInt(progress * 10));
+   if (progress >= 1) { holding = false; holdTime = 0; Run(item); }
+  }
+  void ChangeTab(int direction) {
+   if (notebookIds == null || notebookIds.Length == 0) return;
+   OpenNotebook(notebookIds[(tabIndex + direction + notebookIds.Length) % notebookIds.Length]);
+  }
+  public void Close() { holding = false; StopAllCoroutines(); Delete(ref overlay); menuRoot = null; holdText = null; notebook = false; }
+
+  // ───────── 야장 ─────────
+  public void OpenNotebook(string nextTab = "field") {
+   var ids = S.zone == 8 ? new[] { "field", "archive", "senior", "closure", "sign" } : new[] { "field", "archive", "senior" };
+   string id = S.zone == 8 && nextTab == "field" ? "sign" : nextTab; int index = Array.IndexOf(ids, id); if (index < 0) index = 0;
+   var names = ids.Select(i => i == "field" ? "현장 야장" : i == "archive" ? "수집 기록" : i == "senior" ? "선배 수첩" : i == "closure" ? "최종 폐합" : "서명").ToArray();
+   OpenMenu("", names, index, () => BuildNotebook(ids[index]), false, true, true);
+   notebookIds = ids;
+  }
+  List<MenuRow> BuildNotebook(string id) { switch (id) { case "archive": return ArchiveItems(); case "senior": return SeniorItems(); case "closure": return ClosureItems(); case "sign": return SignItems(); default: return FieldItems(); } }
+
+  List<MenuRow> FieldItems() {
+   var list = new List<MenuRow>(); var z = E.Current;
+   list.Add(Head(z == null ? "지상 A-1  ·  12.400 m" : z.name + "  ·  도면 " + z.plan.ToString("0.0") + " m"));
+   foreach (var record in S.records.Where(r => r.zone == S.zone)) {
+    var r = record; string name = z?.targets.FirstOrDefault(t => t.id == r.target)?.label ?? "지상 A-1";
+    list.Add(Item(r.id.ToString("00") + "  " + name + "  " + r.reference, r.value.ToString("0.000") + " " + r.unit + "   " + (r.suspect ? "☒" : "☐"), () => { r.suspect = !r.suspect; game.Save(); }));
+   }
+   if (z != null) {
+    list.Add(Head(z.question));
+    foreach (var choice in z.choices) { var c = choice; list.Add(Item("위치  " + c.label, "", () => { Toast(E.Locate(c.id)); game.Changed(); })); }
+    if (S.solved[S.zone]) list.Add(Line((z.u ?? "기록") + "  확인"));
+    var judgment = S.judgments.FirstOrDefault(j => j.zone == S.zone);
+    foreach (var type in new[] { "K", "P", "hold" }) {
+     string t = type; string label = t == "K" ? "K  " + z.k.ToString("0.000") + " m  확정" : t == "P" ? "P  " + z.p.ToString("0.000") + " m  보류" : "판정 보류";
+     list.Add(Item(label, judgment != null && judgment.type == t ? "●" : "", () => { Toast(E.Judge(t)); game.Changed(); }));
+    }
+    list.Add(Line("폐합 오차", (judgment == null ? "—" : judgment.error.ToString("0.000")) + " / 0.050"));
+   }
+   if (S.zone < 8) list.Add(Item(S.zone == 0 ? "지하로  →" : "다음 구역  →", "", game.Advance));
+   return list;
+  }
+  List<MenuRow> ArchiveItems() {
+   var list = new List<MenuRow>();
+   foreach (int id in S.notes) {
+    var zone = E.Data.zones[id - 1]; list.Add(Head("Z" + id + "  " + zone.name));
+    foreach (var line in zone.note.Split(new[] { " / " }, StringSplitOptions.RemoveEmptyEntries)) list.Add(Line(line));
+   }
+   if (S.notes.Count == 0) list.Add(Head("기록 없음"));
+   list.Add(Head("U   " + string.Join("   ", E.Data.zones.Take(6).Select(z => z.u + (S.located.Any(l => l.id == z.u) ? " ✓" : " —")))));
+   for (int id = 1; id <= S.maxZone; id++) { int n = id; list.Add(Item("Z" + id + "  " + E.Data.zones[id - 1].name, "재방문 · 12분", () => game.Revisit(n))); }
+   return list;
+  }
+  List<MenuRow> SeniorItems() {
+   var list = new List<MenuRow> { Line("숫자가 이상하면 표준척부터. 5m짜리."), Line("기존 점과 내 점은 보는 기준이 다르다."), Line("어디서 틀어지는지 모르겠으면 반으로 쪼개.") };
+   if (S.zone >= 3) list.Add(Line("한 바퀴 돌아 안 맞으면, 그게 오차야."));
+   if (S.zone >= 6) list.Add(Line("서명은 내가 한다. 내가 확인한 걸 믿는다."));
+   return list;
+  }
+  List<MenuRow> ClosureItems() {
+   var list = new List<MenuRow> { Head("U 여섯 곳  →  K-01") };
+   foreach (string id in new[] { "U-1", "U-2", "U-3", "U-4", "U-5", "U-6", "K-01" }) { string node = id; list.Add(Item(node, "측정", () => { Toast(E.Traverse(node)); game.Changed(); })); }
+   list.Add(Line(string.Join(" → ", S.route)));
+   list.Add(Line(S.closed ? "폐합 오차 0.000 / 0.050" : "배터리 " + S.battery + " / 7"));
+   list.Add(Item("순서 초기화", "", () => { S.route.Clear(); S.closed = false; game.Save(); }));
+   return list;
+  }
+  List<MenuRow> SignItems() {
+   var list = new List<MenuRow>();
+   foreach (var z in E.Data.zones.Take(7)) { var j = S.judgments.FirstOrDefault(v => v.zone == z.id); list.Add(Line("Z" + z.id + "  " + z.name, j == null ? "—" : j.value.ToString("0.000") + "  " + j.status)); }
+   var sum = E.Summary();
+   list.Add(Head("확정 " + sum.confirmed + "  ·  보류 " + sum.held + "  ·  도움 " + sum.helped + "     U " + S.located.Count + "/6  ·  폐합 " + (S.closed ? "✓" : "—")));
+   foreach (string id in new[] { "A", "B", "C", "D" }) {
+    string type = id; var ending = E.Data.endings.First(e => e.id == type); string blocked = E.SignBlocked(type);
+    list.Add(Item((signType == type ? "●  " : "○  ") + ending.name, blocked ?? "", () => signType = type, blocked == null));
+   }
+   var sign = Item("서명", "Space 길게", () => { string error = E.Sign(signType, "측량기술자"); if (error != null) Toast(error); else { game.Save(); ShowEnding(); } });
+   sign.Hold = 1.6f; list.Add(sign);
+   return list;
+  }
+
+  // ───────── 일시정지 ─────────
+  public void Pause() {
+   OpenMenu("작업 중지", null, 0, () => new List<MenuRow> {
+    Item("복귀", "", Close),
+    Item("성과도 보관", "", Export),
+    Item("환경음", "켜기 / 끄기", game.ToggleAudio),
+    Item("철수", "", () => { E.Sign("E", "미서명"); game.Save(); ShowEnding(); }, S.notes.Contains(1)),
+    Item("타이틀로", "", game.ReturnTitle),
+    Head("WASD 이동  ·  휠 대상 선택  ·  클릭 / Space 측정"),
+    Head("P 기준점  ·  Q K/P  ·  E 조사  ·  R 무전  ·  F 손전등  ·  TAB 야장")
+   }, false);
+  }
+
+  // ───────── 결말: 문장을 하나씩 천천히 ─────────
+  public void ShowEnding() { Close(); StartCoroutine(EndingRoutine()); }
+  IEnumerator EndingRoutine() {
+   var ending = E.Data.endings.First(v => v.id == S.ending);
+   overlay = Rect("Ending", root, CC, CC, Vector2.zero, Vector2.zero); Stretch(overlay);
+   var dim = Panel("Dim", overlay, CC, CC, Vector2.zero, Vector2.zero, new Color(shade.r, shade.g, shade.b, .96f)); Stretch(dim.rectTransform);
+   Label(overlay, ending.headline, 36, paper, TextAnchor.MiddleCenter, CC, CC, new Vector2(0, 120), new Vector2(1200, 120));
+   var line = Label(overlay, "", 23, light, TextAnchor.MiddleCenter, CC, CC, new Vector2(0, -20), new Vector2(1100, 90));
+   yield return new WaitForSecondsRealtime(2.4f);
+   foreach (var sentence in Regex.Split(ending.text.Trim(), @"(?<=[.!?])\s+")) { line.text = sentence; yield return new WaitForSecondsRealtime(Mathf.Max(2.2f, sentence.Length * .07f)); }
+   line.text = ending.after; line.color = muted; yield return new WaitForSecondsRealtime(1.6f);
+   notebook = false; tabNames = null; menuLeft = true; menuTitle = "";
+   builder = () => new List<MenuRow> { Item("성과도 보관", "", Export), Item("타이틀로", "", game.ReturnTitle) };
+   openedFrame = Time.frameCount; Rebuild(true);
+  }
+
+  void Export() {
+   var b = new StringBuilder("폐합 / 서진산 지질관측소 측량 성과도\n결말: " + S.ending + "\n\n");
+   foreach (var r in S.records) b.AppendLine(SurveyEngine.Clock(r.time) + " / Z" + r.zone + " / " + r.reference + " / " + r.target + " / " + r.value.ToString("0.000") + " " + r.unit + " / " + (r.suspect ? "의심" : ""));
+   b.AppendLine("귀환: " + string.Join(" → ", S.route));
+   var path = Path.Combine(Application.persistentDataPath, "폐합_현장성과도.txt");
+   File.WriteAllText(path, b.ToString(), Encoding.UTF8); Toast("성과도 저장"); Application.OpenURL("file:///" + Application.persistentDataPath.Replace('\\', '/'));
+  }
  }
 }
