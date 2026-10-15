@@ -58,3 +58,4 @@ Thumbs.db
 # .NET test build output
 tests/**/bin/
 tests/**/obj/
+!tests/**/*.csproj
