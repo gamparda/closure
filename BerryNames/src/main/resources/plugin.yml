@@ -1,0 +1,13 @@
+name: BerryNames
+version: '${project.version}'
+main: kr.berry.names.BerryNames
+api-version: '26.3'
+description: 서버 입장 순서대로 베리일, 베리이, 베리삼... 닉네임 부여
+commands:
+  berrynames:
+    description: BerryNames 관리
+    usage: /berrynames <rename|reset|whois|reload>
+    permission: berrynames.admin
+permissions:
+  berrynames.admin:
+    default: op
